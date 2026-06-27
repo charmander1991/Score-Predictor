@@ -124,6 +124,16 @@ header h1 {
   background: var(--surface-hover);
 }
 
+.suggestion-item.searching {
+  cursor: default;
+  color: var(--text-muted);
+}
+
+.suggestion-item.error {
+  cursor: default;
+  color: var(--loss);
+}
+
 .vs-badge {
   font-weight: 700;
   font-size: 0.9rem;

@@ -1,25 +1,13 @@
-const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
-const BASE_URL = 'https://www.worldfootball.net';
+const JINA_BASE = 'https://r.jina.ai/';
+const WF_BASE = 'https://www.worldfootball.net';
 
-let teamsData = [];
 let selectedTeam1 = null;
 let selectedTeam2 = null;
+let searchTimeout = null;
 
 async function init() {
-  const response = await fetch('data/teams.json');
-  const data = await response.json();
-  teamsData = [
-    ...data.premier_league,
-    ...data.la_liga,
-    ...data.bundesliga,
-    ...data.serie_a,
-    ...data.ligue_1,
-    ...data.world_cup_nations
-  ];
-
   setupSearch('team1-search', 'team1-suggestions', 1);
   setupSearch('team2-search', 'team2-suggestions', 2);
-
   document.getElementById('predict-btn').addEventListener('click', handlePredict);
 }
 
@@ -28,42 +16,103 @@ function setupSearch(inputId, suggestionsId, teamNum) {
   const suggestions = document.getElementById(suggestionsId);
 
   input.addEventListener('input', () => {
-    const query = input.value.toLowerCase().trim();
-    suggestions.innerHTML = '';
+    clearTimeout(searchTimeout);
+    const query = input.value.trim();
 
     if (query.length < 2) {
       suggestions.classList.remove('active');
+      suggestions.innerHTML = '';
       return;
     }
 
-    const matches = teamsData.filter(t =>
-      t.name.toLowerCase().includes(query)
-    ).slice(0, 8);
-
-    if (matches.length === 0) {
-      suggestions.classList.remove('active');
-      return;
-    }
-
-    matches.forEach(team => {
-      const div = document.createElement('div');
-      div.className = 'suggestion-item';
-      div.textContent = team.name;
-      div.addEventListener('click', () => {
-        input.value = team.name;
-        suggestions.classList.remove('active');
-        if (teamNum === 1) selectedTeam1 = team;
-        else selectedTeam2 = team;
-        updatePredictButton();
-      });
-      suggestions.appendChild(div);
-    });
-
+    suggestions.innerHTML = '<div class="suggestion-item searching">Searching...</div>';
     suggestions.classList.add('active');
+
+    searchTimeout = setTimeout(async () => {
+      try {
+        const results = await searchTeams(query);
+        renderSuggestions(results, suggestions, input, teamNum);
+      } catch (err) {
+        suggestions.innerHTML = '<div class="suggestion-item error">Search failed, try again</div>';
+      }
+    }, 500);
   });
 
   input.addEventListener('blur', () => {
-    setTimeout(() => suggestions.classList.remove('active'), 200);
+    setTimeout(() => suggestions.classList.remove('active'), 300);
+  });
+}
+
+async function searchTeams(query) {
+  const searchUrl = `${WF_BASE}/search/?q=${encodeURIComponent(query)}`;
+  const jinaUrl = JINA_BASE + searchUrl;
+
+  const response = await fetch(jinaUrl);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  const text = await response.text();
+  return parseSearchResults(text, query);
+}
+
+function parseSearchResults(markdown, query) {
+  const results = [];
+  const lines = markdown.split('\n');
+
+  let inResults = false;
+  for (const line of lines) {
+    if (line.includes('worldfootball.net/teams/') && line.includes('](')) {
+      const urlMatch = line.match(/\]\(https?:\/\/www\.worldfootball\.net(\/teams\/[^)]+)\)/);
+      const nameMatch = line.match(/\[([^\]]+)\]\(https?:\/\/www\.worldfootball\.net/);
+
+      if (urlMatch && nameMatch) {
+        const url = urlMatch[1];
+        let name = nameMatch[1];
+
+        const urlParts = url.split('/');
+        const idPart = urlParts[2];
+        const slugPart = urlParts[3];
+
+        if (idPart && idPart.startsWith('te') && slugPart) {
+          results.push({
+            name: name.replace(/».*$/, '').trim(),
+            url: url,
+            id: idPart,
+            slug: slugPart
+          });
+        }
+      }
+    }
+  }
+
+  const seen = new Set();
+  return results.filter(r => {
+    if (seen.has(r.id + r.name)) return false;
+    seen.add(r.id + r.name);
+    return true;
+  }).slice(0, 10);
+}
+
+function renderSuggestions(results, container, input, teamNum) {
+  container.innerHTML = '';
+
+  if (results.length === 0) {
+    container.innerHTML = '<div class="suggestion-item">No teams found</div>';
+    return;
+  }
+
+  results.forEach(team => {
+    const div = document.createElement('div');
+    div.className = 'suggestion-item';
+    div.textContent = team.name;
+    div.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      input.value = team.name;
+      container.classList.remove('active');
+      if (teamNum === 1) selectedTeam1 = team;
+      else selectedTeam2 = team;
+      updatePredictButton();
+    });
+    container.appendChild(div);
   });
 }
 
@@ -93,22 +142,19 @@ async function handlePredict() {
 }
 
 async function fetchTeamStats(team) {
-  const url = `${BASE_URL}/teams/${team.id}/${team.slug}/`;
-  const proxyUrl = CORS_PROXY + encodeURIComponent(url);
+  const url = `${WF_BASE}${team.url}`;
+  const jinaUrl = JINA_BASE + url;
 
-  const response = await fetch(proxyUrl);
+  const response = await fetch(jinaUrl);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-  const html = await response.text();
-  return parseTeamStats(html, team.name);
+  const markdown = await response.text();
+  return parseTeamStats(markdown, team.name);
 }
 
-function parseTeamStats(html, teamName) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-
-  const matches = parseRecentMatches(doc);
-  const topScorer = parseTopScorer(doc);
+function parseTeamStats(markdown, teamName) {
+  const matches = parseMatchesFromMarkdown(markdown);
+  const topScorer = parseTopScorerFromMarkdown(markdown);
 
   const goalsScored = matches.map(m => m.goalsFor);
   const goalsConceded = matches.map(m => m.goalsAgainst);
@@ -136,46 +182,63 @@ function parseTeamStats(html, teamName) {
   };
 }
 
-function parseRecentMatches(doc) {
-  const matchElements = doc.querySelectorAll('.module-gameplan .match');
+function parseMatchesFromMarkdown(markdown) {
   const matches = [];
+  const lines = markdown.split('\n');
 
-  matchElements.forEach(el => {
-    const isFinished = el.classList.contains('finished');
-    if (!isFinished) return;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
 
-    const homeTeam = el.querySelector('.team-shortname-home')?.textContent?.trim() || '';
-    const awayTeam = el.querySelector('.team-shortname-away')?.textContent?.trim() || '';
+    if (line.includes('Ended') && (line.includes('worldfootball.net/match-report') || line.match(/\d+\s+\d+/))) {
+      const scoreMatch = line.match(/(\d+)\s+(\d+)\s+/);
+      if (scoreMatch) {
+        const homeGoals = parseInt(scoreMatch[1]);
+        const awayGoals = parseInt(scoreMatch[2]);
 
-    const homeGoalsEl = el.querySelector('.match-result-home .match-result-0');
-    const awayGoalsEl = el.querySelector('.match-result-away .match-result-0');
+        const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{2}\.\d{2}\.)/);
+        const date = dateMatch ? dateMatch[1] : '';
 
-    const homeGoals = parseInt(homeGoalsEl?.textContent) || 0;
-    const awayGoals = parseInt(awayGoalsEl?.textContent) || 0;
-
-    matches.push({
-      homeTeam,
-      awayTeam,
-      goalsFor: homeGoals,
-      goalsAgainst: awayGoals,
-      result: homeGoals > awayGoals ? 'W' : homeGoals < awayGoals ? 'L' : 'D'
-    });
-  });
+        matches.push({
+          homeTeam: '',
+          awayTeam: '',
+          goalsFor: homeGoals,
+          goalsAgainst: awayGoals,
+          result: homeGoals > awayGoals ? 'W' : homeGoals < awayGoals ? 'L' : 'D',
+          date
+        });
+      }
+    }
+  }
 
   return matches.slice(0, 10);
 }
 
-function parseTopScorer(doc) {
-  const firstScorerRow = doc.querySelector('.module-statistics tbody tr');
-  if (!firstScorerRow) return 'N/A';
+function parseTopScorerFromMarkdown(markdown) {
+  const lines = markdown.split('\n');
+  let inTopscorer = false;
 
-  const nameEl = firstScorerRow.querySelector('.person-shortname a, .person-name a');
-  const goalsEl = firstScorerRow.querySelector('.person_stats-score');
+  for (const line of lines) {
+    if (line.includes('Topscorer') || line.includes('Top scorer')) {
+      inTopscorer = true;
+      continue;
+    }
 
-  const name = nameEl?.textContent?.trim() || 'Unknown';
-  const goals = goalsEl?.textContent?.trim() || '0';
+    if (inTopscorer && line.includes('|') && line.includes('Forward')) {
+      const parts = line.split('|').map(p => p.trim());
+      const name = parts.find(p => p.length > 2 && !p.match(/^\d+$/) && p !== '');
+      const goals = parts.find(p => p.match(/^\d+$/));
 
-  return `${name} (${goals})`;
+      if (name && goals) {
+        return `${name} (${goals} goals)`;
+      }
+    }
+
+    if (inTopscorer && line.includes('Appearances')) {
+      break;
+    }
+  }
+
+  return 'N/A';
 }
 
 function predictScore(stats1, stats2) {
