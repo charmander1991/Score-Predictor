@@ -34,6 +34,7 @@ function setupSearch(inputId, suggestionsId, teamNum) {
         renderSuggestions(results, suggestions, input, teamNum);
       } catch (err) {
         suggestions.innerHTML = '<div class="suggestion-item error">Search failed, try again</div>';
+        console.error('Search error:', err);
       }
     }, 500);
   });
@@ -44,50 +45,46 @@ function setupSearch(inputId, suggestionsId, teamNum) {
 }
 
 async function searchTeams(query) {
-  const searchUrl = `${WF_BASE}/search/?q=${encodeURIComponent(query)}`;
-  const jinaUrl = JINA_BASE + searchUrl;
+  const duckUrl = `https://html.duckduckgo.com/html/?q=site:worldfootball.net+${encodeURIComponent(query)}+team`;
+  const jinaUrl = JINA_BASE + duckUrl;
 
   const response = await fetch(jinaUrl);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
   const text = await response.text();
-  return parseSearchResults(text, query);
+  return parseSearchResults(text);
 }
 
-function parseSearchResults(markdown, query) {
+function parseSearchResults(markdown) {
   const results = [];
   const lines = markdown.split('\n');
 
-  let inResults = false;
   for (const line of lines) {
-    if (line.includes('worldfootball.net/teams/') && line.includes('](')) {
-      const urlMatch = line.match(/\]\(https?:\/\/www\.worldfootball\.net(\/teams\/[^)]+)\)/);
-      const nameMatch = line.match(/\[([^\]]+)\]\(https?:\/\/www\.worldfootball\.net/);
+    if (!line.includes('worldfootball.net/teams/')) continue;
 
-      if (urlMatch && nameMatch) {
-        const url = urlMatch[1];
-        let name = nameMatch[1];
+    const urlMatch = line.match(/https?:\/\/www\.worldfootball\.net(\/teams\/te\d+\/[^\/\s]+)/);
+    if (!urlMatch) continue;
 
-        const urlParts = url.split('/');
-        const idPart = urlParts[2];
-        const slugPart = urlParts[3];
+    const url = urlMatch[1];
+    const urlParts = url.split('/');
+    const idPart = urlParts[2];
+    const slugPart = urlParts[3];
 
-        if (idPart && idPart.startsWith('te') && slugPart) {
-          results.push({
-            name: name.replace(/».*$/, '').trim(),
-            url: url,
-            id: idPart,
-            slug: slugPart
-          });
-        }
-      }
-    }
+    if (!idPart || !idPart.startsWith('te') || !slugPart) continue;
+
+    let name = slugPart.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+    const nameHint = line.match(/\*\*\s*([A-Za-z\s]+?)\s*\*\*/);
+    if (nameHint) name = nameHint[1].trim();
+
+    results.push({ name, url, id: idPart, slug: slugPart });
   }
 
   const seen = new Set();
   return results.filter(r => {
-    if (seen.has(r.id + r.name)) return false;
-    seen.add(r.id + r.name);
+    const key = r.id + r.name;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   }).slice(0, 10);
 }
@@ -186,28 +183,32 @@ function parseMatchesFromMarkdown(markdown) {
   const matches = [];
   const lines = markdown.split('\n');
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  for (const line of lines) {
+    if (!line.includes('Ended') && !line.includes('Live')) continue;
 
-    if (line.includes('Ended') && (line.includes('worldfootball.net/match-report') || line.match(/\d+\s+\d+/))) {
-      const scoreMatch = line.match(/(\d+)\s+(\d+)\s+/);
-      if (scoreMatch) {
-        const homeGoals = parseInt(scoreMatch[1]);
-        const awayGoals = parseInt(scoreMatch[2]);
+    const homeImgMatch = line.match(/!\[Image\s+\d+:\s*([^\]]+)\]/);
+    if (!homeImgMatch) continue;
 
-        const dateMatch = line.match(/([A-Z][a-z]{2}\s+\d{2}\.\d{2}\.)/);
-        const date = dateMatch ? dateMatch[1] : '';
+    const homeTeam = homeImgMatch[1].trim();
 
-        matches.push({
-          homeTeam: '',
-          awayTeam: '',
-          goalsFor: homeGoals,
-          goalsAgainst: awayGoals,
-          result: homeGoals > awayGoals ? 'W' : homeGoals < awayGoals ? 'L' : 'D',
-          date
-        });
-      }
-    }
+    const scoreRegex = /([A-Za-z\s]+?)\s+(\d+)\s+(\d+)\s+!\[Image\s+\d+:\s*([^\]]+)\].*?([A-Za-z\s]+?)\s+(\d+)\s+(\d+)\s+([A-Z][a-z]{2}\s+\d{2}\.\d{2}\.)/;
+    const scoreMatch = line.match(scoreRegex);
+
+    if (!scoreMatch) continue;
+
+    const awayTeam = scoreMatch[4].trim();
+    const homeGoals = parseInt(scoreMatch[2]);
+    const awayGoals = parseInt(scoreMatch[6]);
+    const date = scoreMatch[8];
+
+    matches.push({
+      homeTeam,
+      awayTeam,
+      goalsFor: homeGoals,
+      goalsAgainst: awayGoals,
+      result: homeGoals > awayGoals ? 'W' : homeGoals < awayGoals ? 'L' : 'D',
+      date
+    });
   }
 
   return matches.slice(0, 10);
@@ -223,13 +224,14 @@ function parseTopScorerFromMarkdown(markdown) {
       continue;
     }
 
-    if (inTopscorer && line.includes('|') && line.includes('Forward')) {
+    if (inTopscorer && line.includes('|') && (line.includes('Forward') || line.includes('Midfield') || line.includes('Defence'))) {
       const parts = line.split('|').map(p => p.trim());
-      const name = parts.find(p => p.length > 2 && !p.match(/^\d+$/) && p !== '');
-      const goals = parts.find(p => p.match(/^\d+$/));
+      const nameParts = parts.filter(p => p.length > 2 && !p.match(/^\d+$/) && p !== '' && !p.includes('Forward') && !p.includes('Midfield') && !p.includes('Defence') && !p.includes('Goalkeeper'));
 
-      if (name && goals) {
-        return `${name} (${goals} goals)`;
+      const scoresPart = parts.find(p => p.match(/^\d+$/));
+
+      if (nameParts.length > 0 && scoresPart) {
+        return `${nameParts[0]} (${scoresPart} goals)`;
       }
     }
 
