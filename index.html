@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FIFA Stats Predictor</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>FIFA Stats Predictor</h1>
+      <p class="subtitle">Search teams, compare stats, predict scores</p>
+    </header>
+
+    <div class="search-section">
+      <div class="search-pair">
+        <div class="search-wrapper">
+          <label for="team1-search">Home Team</label>
+          <input type="text" id="team1-search" placeholder="Search team..." autocomplete="off">
+          <div id="team1-suggestions" class="suggestions-dropdown"></div>
+        </div>
+        <div class="vs-badge">VS</div>
+        <div class="search-wrapper">
+          <label for="team2-search">Away Team</label>
+          <input type="text" id="team2-search" placeholder="Search team..." autocomplete="off">
+          <div id="team2-suggestions" class="suggestions-dropdown"></div>
+        </div>
+      </div>
+      <button id="predict-btn" disabled>Predict Score</button>
+    </div>
+
+    <div id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p>Fetching latest stats...</p>
+    </div>
+
+    <div id="error" class="error hidden"></div>
+
+    <div id="results" class="results hidden">
+      <div class="comparison-grid">
+        <div class="team-card" id="team1-card">
+          <h2 id="team1-name"></h2>
+          <div class="form-section">
+            <h3>Recent Form</h3>
+            <div id="team1-form" class="form-badges"></div>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-label">Avg Goals Scored</span>
+              <span class="stat-value" id="team1-avg-scored"></span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Avg Goals Conceded</span>
+              <span class="stat-value" id="team1-avg-conceded"></span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Matches Played</span>
+              <span class="stat-value" id="team1-matches"></span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Win Rate</span>
+              <span class="stat-value" id="team1-win-rate"></span>
+            </div>
+          </div>
+          <div class="top-scorer">
+            <h3>Top Scorer</h3>
+            <p id="team1-top-scorer"></p>
+          </div>
+        </div>
+
+        <div class="team-card" id="team2-card">
+          <h2 id="team2-name"></h2>
+          <div class="form-section">
+            <h3>Recent Form</h3>
+            <div id="team2-form" class="form-badges"></div>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-label">Avg Goals Scored</span>
+              <span class="stat-value" id="team2-avg-scored"></span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Avg Goals Conceded</span>
+              <span class="stat-value" id="team2-avg-conceded"></span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Matches Played</span>
+              <span class="stat-value" id="team2-matches"></span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Win Rate</span>
+              <span class="stat-value" id="team2-win-rate"></span>
+            </div>
+          </div>
+          <div class="top-scorer">
+            <h3>Top Scorer</h3>
+            <p id="team2-top-scorer"></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="prediction-section">
+        <h2>Predicted Score</h2>
+        <div class="prediction-display">
+          <div class="prediction-score">
+            <span id="pred-team1-name"></span>
+            <span class="score" id="pred-team1-goals"></span>
+            <span class="score-separator">-</span>
+            <span class="score" id="pred-team2-goals"></span>
+            <span id="pred-team2-name"></span>
+          </div>
+          <div class="probabilities">
+            <div class="prob-item">
+              <span id="prob-team1-label"></span>
+              <div class="prob-bar">
+                <div id="prob-team1-bar" class="prob-fill"></div>
+              </div>
+              <span id="prob-team1-value"></span>
+            </div>
+            <div class="prob-item">
+              <span>Draw</span>
+              <div class="prob-bar">
+                <div id="prob-draw-bar" class="prob-fill"></div>
+              </div>
+              <span id="prob-draw-value"></span>
+            </div>
+            <div class="prob-item">
+              <span id="prob-team2-label"></span>
+              <div class="prob-bar">
+                <div id="prob-team2-bar" class="prob-fill"></div>
+              </div>
+              <span id="prob-team2-value"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <p>Data sourced from worldfootball.net | For informational purposes only</p>
+    </footer>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
