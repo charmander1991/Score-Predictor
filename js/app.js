@@ -1,14 +1,84 @@
-const JINA_BASE = 'https://r.jina.ai/';
-const WF_BASE = 'https://www.worldfootball.net';
+const API_BASE = 'https://api.openligadb.de';
 
+const LEAGUES = [
+  { shortcut: 'wm2026', name: 'World Cup 2026' },
+  { shortcut: 'bl1', name: 'Bundesliga' },
+  { shortcut: 'ucl', name: 'Champions League' },
+  { shortcut: 'cwm', name: 'Club World Cup' }
+];
+
+let allMatches = [];
+let teamCache = {};
 let selectedTeam1 = null;
 let selectedTeam2 = null;
-let searchTimeout = null;
 
 async function init() {
-  setupSearch('team1-search', 'team1-suggestions', 1);
-  setupSearch('team2-search', 'team2-suggestions', 2);
-  document.getElementById('predict-btn').addEventListener('click', handlePredict);
+  showLoading(true);
+  try {
+    const leaguePromises = LEAGUES.map(l => fetchLeagueMatches(l.shortcut));
+    const results = await Promise.allSettled(leaguePromises);
+
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled') {
+        allMatches = allMatches.concat(result.value);
+      } else {
+        console.warn(`Failed to load ${LEAGUES[i].name}:`, result.reason);
+      }
+    });
+
+    buildTeamCache();
+    setupSearch('team1-search', 'team1-suggestions', 1);
+    setupSearch('team2-search', 'team2-suggestions', 2);
+    document.getElementById('predict-btn').addEventListener('click', handlePredict);
+  } catch (err) {
+    showError('Failed to load data. Please refresh.');
+    console.error(err);
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function fetchLeagueMatches(shortcut) {
+  const response = await fetch(`${API_BASE}/getmatchdata/${shortcut}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+function buildTeamCache() {
+  teamCache = {};
+
+  allMatches.forEach(match => {
+    const home = match.team1.teamName;
+    const away = match.team2.teamName;
+
+    if (!teamCache[home]) teamCache[home] = { name: home, matches: [], id: match.team1.teamId };
+    if (!teamCache[away]) teamCache[away] = { name: away, matches: [], id: match.team2.teamId };
+
+    const isFinished = match.matchIsFinished;
+
+    if (isFinished) {
+      const homeGoals = match.matchResults.find(r => r.resultTypeID === 2)?.pointsTeam1 || 0;
+      const awayGoals = match.matchResults.find(r => r.resultTypeID === 2)?.pointsTeam2 || 0;
+
+      teamCache[home].matches.push({
+        opponent: away,
+        goalsFor: homeGoals,
+        goalsAgainst: awayGoals,
+        result: homeGoals > awayGoals ? 'W' : homeGoals < awayGoals ? 'L' : 'D',
+        date: match.matchDateTimeUTC,
+        competition: match.leagueName
+      });
+
+      teamCache[away].matches.push({
+        opponent: home,
+        goalsFor: awayGoals,
+        goalsAgainst: homeGoals,
+        result: awayGoals > homeGoals ? 'W' : awayGoals < homeGoals ? 'L' : 'D',
+        date: match.matchDateTimeUTC,
+        competition: match.leagueName
+      });
+    }
+  });
 }
 
 function setupSearch(inputId, suggestionsId, teamNum) {
@@ -16,8 +86,7 @@ function setupSearch(inputId, suggestionsId, teamNum) {
   const suggestions = document.getElementById(suggestionsId);
 
   input.addEventListener('input', () => {
-    clearTimeout(searchTimeout);
-    const query = input.value.trim();
+    const query = input.value.toLowerCase().trim();
 
     if (query.length < 2) {
       suggestions.classList.remove('active');
@@ -25,91 +94,39 @@ function setupSearch(inputId, suggestionsId, teamNum) {
       return;
     }
 
-    suggestions.innerHTML = '<div class="suggestion-item searching">Searching...</div>';
-    suggestions.classList.add('active');
+    const matches = Object.values(teamCache)
+      .filter(t => t.name.toLowerCase().includes(query))
+      .sort((a, b) => a.name.toLowerCase().indexOf(query) - b.name.toLowerCase().indexOf(query))
+      .slice(0, 10);
 
-    searchTimeout = setTimeout(async () => {
-      try {
-        const results = await searchTeams(query);
-        renderSuggestions(results, suggestions, input, teamNum);
-      } catch (err) {
-        suggestions.innerHTML = '<div class="suggestion-item error">Search failed, try again</div>';
-        console.error('Search error:', err);
-      }
-    }, 500);
+    suggestions.innerHTML = '';
+
+    if (matches.length === 0) {
+      suggestions.innerHTML = '<div class="suggestion-item">No teams found</div>';
+      suggestions.classList.add('active');
+      return;
+    }
+
+    matches.forEach(team => {
+      const div = document.createElement('div');
+      div.className = 'suggestion-item';
+      div.textContent = team.name;
+      div.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        input.value = team.name;
+        suggestions.classList.remove('active');
+        if (teamNum === 1) selectedTeam1 = team;
+        else selectedTeam2 = team;
+        updatePredictButton();
+      });
+      suggestions.appendChild(div);
+    });
+
+    suggestions.classList.add('active');
   });
 
   input.addEventListener('blur', () => {
     setTimeout(() => suggestions.classList.remove('active'), 300);
-  });
-}
-
-async function searchTeams(query) {
-  const duckUrl = `https://html.duckduckgo.com/html/?q=site:worldfootball.net+${encodeURIComponent(query)}+team`;
-  const jinaUrl = JINA_BASE + duckUrl;
-
-  const response = await fetch(jinaUrl);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-  const text = await response.text();
-  return parseSearchResults(text);
-}
-
-function parseSearchResults(markdown) {
-  const results = [];
-  const lines = markdown.split('\n');
-
-  for (const line of lines) {
-    if (!line.includes('worldfootball.net/teams/')) continue;
-
-    const urlMatch = line.match(/https?:\/\/www\.worldfootball\.net(\/teams\/te\d+\/[^\/\s]+)/);
-    if (!urlMatch) continue;
-
-    const url = urlMatch[1];
-    const urlParts = url.split('/');
-    const idPart = urlParts[2];
-    const slugPart = urlParts[3];
-
-    if (!idPart || !idPart.startsWith('te') || !slugPart) continue;
-
-    let name = slugPart.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-
-    const nameHint = line.match(/\*\*\s*([A-Za-z\s]+?)\s*\*\*/);
-    if (nameHint) name = nameHint[1].trim();
-
-    results.push({ name, url, id: idPart, slug: slugPart });
-  }
-
-  const seen = new Set();
-  return results.filter(r => {
-    const key = r.id + r.name;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).slice(0, 10);
-}
-
-function renderSuggestions(results, container, input, teamNum) {
-  container.innerHTML = '';
-
-  if (results.length === 0) {
-    container.innerHTML = '<div class="suggestion-item">No teams found</div>';
-    return;
-  }
-
-  results.forEach(team => {
-    const div = document.createElement('div');
-    div.className = 'suggestion-item';
-    div.textContent = team.name;
-    div.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      input.value = team.name;
-      container.classList.remove('active');
-      if (teamNum === 1) selectedTeam1 = team;
-      else selectedTeam2 = team;
-      updatePredictButton();
-    });
-    container.appendChild(div);
   });
 }
 
@@ -124,37 +141,23 @@ async function handlePredict() {
   hideResults();
 
   try {
-    const [stats1, stats2] = await Promise.all([
-      fetchTeamStats(selectedTeam1),
-      fetchTeamStats(selectedTeam2)
-    ]);
+    const stats1 = calculateStats(selectedTeam1);
+    const stats2 = calculateStats(selectedTeam2);
 
     displayResults(stats1, stats2);
   } catch (err) {
-    showError('Failed to fetch stats. Please try again.');
+    showError('Failed to calculate stats.');
     console.error(err);
   } finally {
     showLoading(false);
   }
 }
 
-async function fetchTeamStats(team) {
-  const url = `${WF_BASE}${team.url}`;
-  const jinaUrl = JINA_BASE + url;
+function calculateStats(team) {
+  const recentMatches = team.matches.slice(0, 10);
 
-  const response = await fetch(jinaUrl);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-  const markdown = await response.text();
-  return parseTeamStats(markdown, team.name);
-}
-
-function parseTeamStats(markdown, teamName) {
-  const matches = parseMatchesFromMarkdown(markdown);
-  const topScorer = parseTopScorerFromMarkdown(markdown);
-
-  const goalsScored = matches.map(m => m.goalsFor);
-  const goalsConceded = matches.map(m => m.goalsAgainst);
+  const goalsScored = recentMatches.map(m => m.goalsFor);
+  const goalsConceded = recentMatches.map(m => m.goalsAgainst);
 
   const avgScored = goalsScored.length > 0
     ? goalsScored.reduce((a, b) => a + b, 0) / goalsScored.length
@@ -164,80 +167,49 @@ function parseTeamStats(markdown, teamName) {
     ? goalsConceded.reduce((a, b) => a + b, 0) / goalsConceded.length
     : 0;
 
-  const wins = matches.filter(m => m.result === 'W').length;
-  const winRate = matches.length > 0 ? (wins / matches.length) * 100 : 0;
+  const wins = recentMatches.filter(m => m.result === 'W').length;
+  const winRate = recentMatches.length > 0 ? (wins / recentMatches.length) * 100 : 0;
+
+  const topScorer = getTopScorer(team);
 
   return {
-    name: teamName,
-    matches,
-    form: matches.slice(0, 5).map(m => m.result),
+    name: team.name,
+    matches: recentMatches,
+    form: recentMatches.slice(0, 5).map(m => m.result),
     avgScored: round(avgScored, 2),
     avgConceded: round(avgConceded, 2),
-    matchesPlayed: matches.length,
+    matchesPlayed: recentMatches.length,
     winRate: round(winRate, 1),
     topScorer
   };
 }
 
-function parseMatchesFromMarkdown(markdown) {
-  const matches = [];
-  const lines = markdown.split('\n');
+function getTopScorer(team) {
+  const goals = {};
 
-  for (const line of lines) {
-    if (!line.includes('Ended') && !line.includes('Live')) continue;
+  team.matches.forEach(match => {
+    const fullMatch = allMatches.find(m =>
+      (m.team1.teamName === team.name && m.team2.teamName === match.opponent) ||
+      (m.team2.teamName === team.name && m.team1.teamName === match.opponent)
+    );
 
-    const homeImgMatch = line.match(/!\[Image\s+\d+:\s*([^\]]+)\]/);
-    if (!homeImgMatch) continue;
+    if (!fullMatch || !fullMatch.goals) return;
 
-    const homeTeam = homeImgMatch[1].trim();
+    const isHome = fullMatch.team1.teamName === team.name;
 
-    const scoreRegex = /([A-Za-z\s]+?)\s+(\d+)\s+(\d+)\s+!\[Image\s+\d+:\s*([^\]]+)\].*?([A-Za-z\s]+?)\s+(\d+)\s+(\d+)\s+([A-Z][a-z]{2}\s+\d{2}\.\d{2}\.)/;
-    const scoreMatch = line.match(scoreRegex);
-
-    if (!scoreMatch) continue;
-
-    const awayTeam = scoreMatch[4].trim();
-    const homeGoals = parseInt(scoreMatch[2]);
-    const awayGoals = parseInt(scoreMatch[6]);
-    const date = scoreMatch[8];
-
-    matches.push({
-      homeTeam,
-      awayTeam,
-      goalsFor: homeGoals,
-      goalsAgainst: awayGoals,
-      result: homeGoals > awayGoals ? 'W' : homeGoals < awayGoals ? 'L' : 'D',
-      date
-    });
-  }
-
-  return matches.slice(0, 10);
-}
-
-function parseTopScorerFromMarkdown(markdown) {
-  const lines = markdown.split('\n');
-  let inTopscorer = false;
-
-  for (const line of lines) {
-    if (line.includes('Topscorer') || line.includes('Top scorer')) {
-      inTopscorer = true;
-      continue;
-    }
-
-    if (inTopscorer && line.includes('|') && (line.includes('Forward') || line.includes('Midfield') || line.includes('Defence'))) {
-      const parts = line.split('|').map(p => p.trim());
-      const nameParts = parts.filter(p => p.length > 2 && !p.match(/^\d+$/) && p !== '' && !p.includes('Forward') && !p.includes('Midfield') && !p.includes('Defence') && !p.includes('Goalkeeper'));
-
-      const scoresPart = parts.find(p => p.match(/^\d+$/));
-
-      if (nameParts.length > 0 && scoresPart) {
-        return `${nameParts[0]} (${scoresPart} goals)`;
+    fullMatch.goals.forEach(g => {
+      if (!g.goalGetterName) return;
+      if (isHome && g.scoreTeam1 === g.scoreTeam2 + 1) {
+        goals[g.goalGetterName] = (goals[g.goalGetterName] || 0) + 1;
+      } else if (!isHome && g.scoreTeam2 === g.scoreTeam1 + 1) {
+        goals[g.goalGetterName] = (goals[g.goalGetterName] || 0) + 1;
       }
-    }
+    });
+  });
 
-    if (inTopscorer && line.includes('Appearances')) {
-      break;
-    }
+  const sorted = Object.entries(goals).sort((a, b) => b[1] - a[1]);
+  if (sorted.length > 0) {
+    return `${sorted[0][0]} (${sorted[0][1]} goals)`;
   }
 
   return 'N/A';
@@ -257,11 +229,8 @@ function predictScore(stats1, stats2) {
   let probDraw = 0;
   let probAway = 0;
 
-  const poisson = (lambda, k) => {
-    return (Math.pow(lambda, k) * Math.exp(-lambda)) / factorial(k);
-  };
-
   const factorial = n => n <= 1 ? 1 : n * factorial(n - 1);
+  const poisson = (lambda, k) => (Math.pow(lambda, k) * Math.exp(-lambda)) / factorial(k);
 
   for (let i = 0; i <= maxGoals; i++) {
     for (let j = 0; j <= maxGoals; j++) {
@@ -277,12 +246,9 @@ function predictScore(stats1, stats2) {
   probDraw = (probDraw / total) * 100;
   probAway = (probAway / total) * 100;
 
-  const predHome = Math.round(lambda1);
-  const predAway = Math.round(lambda2);
-
   return {
-    homeGoals: Math.min(predHome, 5),
-    awayGoals: Math.min(predAway, 5),
+    homeGoals: Math.min(Math.round(lambda1), 5),
+    awayGoals: Math.min(Math.round(lambda2), 5),
     probHome: round(probHome, 1),
     probDraw: round(probDraw, 1),
     probAway: round(probAway, 1)
